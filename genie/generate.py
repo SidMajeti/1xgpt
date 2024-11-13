@@ -69,7 +69,7 @@ def main():
     # Get single example
     example_THW = val_dataset[args.example_ind]["input_ids"].reshape(1, args.window_size, latent_side_len,
                                                                      latent_side_len).to("cuda")
-
+    
     # Load the model checkpoint
     model = STMaskGIT.from_pretrained(args.checkpoint_dir).to("cuda")
     model.eval()

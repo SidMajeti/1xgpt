@@ -17,6 +17,7 @@ from einops import rearrange
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import default_data_collator
+import logging
 
 
 # 1xgpt imports
@@ -160,6 +161,11 @@ def main():
 
     evaluator = GenieEvaluator(args, decode_latents)
     metrics = defaultdict(AvgMetric)
+    
+    logging.basicConfig(
+        filename = "/data/eval.log",
+        level = logging.INFO,
+    )
 
     if args.save_outputs_dir is not None:
         outputs_to_save = defaultdict(list)
@@ -188,12 +194,14 @@ def main():
         decoded_gtruth = decode_tokens(reshaped_input_ids, decode_latents)
         metrics["pred_lpips"].update_list(compute_lpips(decoded_gtruth[:, 1:], pred_frames, lpips_alex))
         
+        print("loss: ", {loss})
         print({key: f"{val.mean():.4f}" for key, val in metrics.items()})
         if args.save_outputs_dir is not None:
             outputs_to_save["pred_frames"].append(pred_frames)
             outputs_to_save["pred_logits"].append(factored_logits)
             outputs_to_save["gtruth_frames"].append(decoded_gtruth)
             outputs_to_save["gtruth_tokens"].append(reshaped_input_ids)
+    logging.info({key: f"{val.mean():.4f}" for key, val in metrics.items()})
 
     if args.save_outputs_dir is not None:
         os.makedirs(args.save_outputs_dir, exist_ok=True)
