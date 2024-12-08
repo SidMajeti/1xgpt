@@ -52,6 +52,8 @@ class FactorizedEmbedding(nn.Module):
         return embeds
 
 
+#this works because essentially you split into 2 even 512 sized dictionaries; u just take the dividend; so k * 1 + j * 512 = orig
+#always works since bound is 2**18 so j < 512; the mod operand is unecessary here...(for the last term at least)
 def factorize_token_ids(
     token_ids: torch.LongTensor,
     num_factored_vocabs: int = 2,

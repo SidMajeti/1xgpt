@@ -108,7 +108,12 @@ class GenieEvaluator:
         for timestep in range(1, WINDOW_SIZE):
             print(f"Generating frame {timestep}")
             inputs_masked = inputs_THW.clone()
+            #masks so that u can condition on prefix appropriately
+            #this means autoregressive right?
             inputs_masked[:, timestep:] = self.model.mask_token_id
+            
+            #hmm shouldn't you be able to just do this all in a batch(ie all timesteps??)
+            #currently it means u sample across batches for each timestep
 
             # MaskGIT sampling
             samples_HW, factored_logits = self.model.maskgit_generate(

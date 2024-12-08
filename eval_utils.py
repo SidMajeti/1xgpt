@@ -73,6 +73,11 @@ def compute_loss(
     labels_THW = labels_THW[:, 1:].to(factored_logits.device)
 
     factored_labels = factorize_labels(labels_THW, num_factored_vocabs, factored_vocab_size)
+    print("factored logits shape: ", factored_logits.shape)
+    #16, 512, 2, 15, 16, 16
+    #batch size, vocab size, #vocabs, time, width, height
+    print("factored labels shape: ", factored_labels.shape)
+    #16, 2, 15, 16, 16
     return torch.nn.functional.cross_entropy(factored_logits, factored_labels, reduction="none")\
         .sum(dim=1).mean().item()  # Final loss is the sum of the two losses across the size-512 vocabularies
 

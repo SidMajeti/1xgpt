@@ -23,12 +23,17 @@ from transformers import (
     get_scheduler,
 )
 
+import wandb
+
 from data import RawTokenDataset, get_maskgit_collator
 from eval_utils import decode_tokens, compute_lpips
 from genie.st_mask_git import GenieConfig, STMaskGIT
 # from llama.config import LlamaConfig1X
 # from llama.modeling_llama_mup import LlamaForCausalLM
 from visualize import decode_latents_wrapper
+
+import torch.multiprocessing
+torch.multiprocessing.set_sharing_strategy('file_system')
 
 matplotlib.use("Agg")
 from matplotlib import pyplot as plt
@@ -96,6 +101,12 @@ def parse_args():
         type=str,
         default=None,
         help="If the training should continue from a checkpoint folder.",
+    )
+    parser.add_argument(
+        "--checkpoint_dir",
+        type=str,
+        default=None,
+        help="Resume from huggingface-like checkpoint dir",
     )
 
     # Training
@@ -270,13 +281,13 @@ def visualize(accelerator, model, dataloader, window_size, metrics_prefix="eval"
         num_prompt_frames = window_size // 2  # hardcoding half of frames for context
         num_new_tokens = latent_side_len ** 2 * (window_size - num_prompt_frames)
         prompt_input_ids = rearrange(reshaped_labels[:, :num_prompt_frames], "b t s -> b (t s)")
-        outputs = unwrapped_model.generate(input_ids=prompt_input_ids, attention_mask=torch.ones_like(prompt_input_ids),
+        outputs = unwrapped_model.generate(input_ids=prompt_input_ids, actions = batch['actions'], attention_mask=torch.ones_like(prompt_input_ids),
                                            max_new_tokens=num_new_tokens, min_new_tokens=num_new_tokens)
         output_tokens = rearrange(outputs, "b (t h w) -> b t h w", t=window_size,
                                   h=latent_side_len, w=latent_side_len)
         gtruth_tokens = rearrange(reshaped_labels[:, num_prompt_frames:], "b t (h w) -> b t h w",
                                   h=latent_side_len, w=latent_side_len)
-
+ 
         decoded_output = decode_tokens(output_tokens.cpu(), decode_latents)
         decoded_gtruth = decode_tokens(gtruth_tokens.cpu(), decode_latents)
 
@@ -327,6 +338,7 @@ def main():
     assert (args.llama_config is not None) ^ (args.genie_config is not None), \
         "Exactly one of `llama_config` and `genie_config` should be set."
 
+    wandb.login(key="cba8706b09a2c1d1bf84c31d552992dde32ad69e")
     # Manual gradient accumulation
     accelerator = Accelerator(gradient_accumulation_steps=1, log_with=args.report_to, project_dir=args.output_dir)
 
@@ -417,7 +429,9 @@ def main():
         config.image_vocab_size = vocab_size
         config.T = args.window_size
         config.S = latent_side_len**2
-        model = STMaskGIT(config)
+        # model = STMaskGIT(config)
+        
+        model = STMaskGIT.from_pretrained(args.checkpoint_dir)
 
         if args.mu_transfer:
             model.set_mup_shapes(rescale_params=True)
@@ -455,7 +469,7 @@ def main():
 
     eval_dataloader = DataLoader(
         eval_dataset, shuffle=False, collate_fn=collate_fn,
-        batch_size=args.per_device_eval_batch_size, pin_memory=True,
+        batch_size=args.per_device_eval_batch_size, pin_memory=False,
     )
 
     # Scheduler and math around the number of training steps.
@@ -659,6 +673,7 @@ def main():
             completed_steps += 1
 
             if isinstance(checkpointing_steps, int) and completed_steps % checkpointing_steps == 0:
+                print("saving checkpoint!!")
                 save_checkpoint(model, accelerator, args, f"step_{completed_steps}")
 
             if completed_steps % args.eval_every_n_steps == 0:

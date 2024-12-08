@@ -56,6 +56,8 @@ class STMaskGIT(nn.Module, PyTorchModelHubMixin):
             d_model=config.d_model,
             mask_token_id=self.mask_token_id,
         )
+        
+        self.action_embed = nn.Linear(config.action_space, config.d_model)
 
         cls = FixedMuReadout if config.use_mup else nn.Linear  # (Fixed)MuReadout might slow dow down compiled training?
         self.out_x_proj = cls(config.d_model, config.factored_vocab_size * config.num_factored_vocabs)
@@ -65,6 +67,7 @@ class STMaskGIT(nn.Module, PyTorchModelHubMixin):
     def generate(
         self,
         input_ids: torch.LongTensor,
+        actions: torch.FloatTensor,
         attention_mask: torch.LongTensor,
         max_new_tokens: int,
         min_new_tokens: int = None,
@@ -99,6 +102,7 @@ class STMaskGIT(nn.Module, PyTorchModelHubMixin):
             # could change sampling hparams
             sample_HW, factored_logits = self.maskgit_generate(
                 inputs_masked_THW,
+                actions,
                 timestep,
                 maskgit_steps=maskgit_steps,
                 temperature=temperature
@@ -123,6 +127,7 @@ class STMaskGIT(nn.Module, PyTorchModelHubMixin):
     def maskgit_generate(
         self,
         prompt_THW: torch.LongTensor,
+        actions: torch.FloatTensor,
         out_t: int,
         maskgit_steps: int = 1,
         temperature: float = 0.0,
@@ -160,7 +165,8 @@ class STMaskGIT(nn.Module, PyTorchModelHubMixin):
         # this will be modified in place on each iteration of this loop
         unmasked = self.init_mask(prompt_THW)
 
-        logits_CTHW = self.compute_logits(prompt_THW)
+        logits_CTHW = self.compute_logits(prompt_THW, actions)
+        #will predict batch x c x time steps x h x w
         logits_CHW = logits_CTHW[:, :, out_t]
         orig_logits_CHW = logits_CHW.clone()  # Return these original logits, not logits after partially sampling.
         for step in tqdm(range(maskgit_steps)):
@@ -168,14 +174,17 @@ class STMaskGIT(nn.Module, PyTorchModelHubMixin):
             if step > 0:  # recompute logits with updated prompt
                 logits_CHW = self.compute_logits(prompt_THW)[:, :, out_t]
 
+            #channel size is equal to num_vocabs * vocab size
             factored_logits = rearrange(logits_CHW, "b (num_vocabs vocab_size) h w -> b vocab_size num_vocabs h w",
                                         vocab_size=self.config.factored_vocab_size,
                                         num_vocabs=self.config.num_factored_vocabs)
 
             factored_probs = torch.nn.functional.softmax(factored_logits, dim=1)
+            #will get highest prob token across each vocab so softmax(on 512 sized vocab)
 
             samples_HW = torch.zeros((bs, h, w), dtype=torch.long, device=prompt_THW.device)
             confidences_HW = torch.ones((bs, h, w), dtype=torch.float, device=prompt_THW.device)
+            #basically unfactorizes samples
             for probs in factored_probs.flip(2).unbind(2):
                 if temperature <= 1e-8:  # greedy sampling
                     sample = probs.argmax(dim=1)
@@ -228,6 +237,7 @@ class STMaskGIT(nn.Module, PyTorchModelHubMixin):
             vocab_size=self.config.factored_vocab_size, num_vocabs=self.config.num_factored_vocabs, H=h, W=w
         )
 
+    #loss is computed across all tokens, even unperturbed ones; does this make sense?
     def compute_loss_and_acc(self, logits_CTHW, targets_THW, relevant_mask_THW):
         # Video token prediction
         targets_THW = targets_THW.clone()
@@ -239,8 +249,10 @@ class STMaskGIT(nn.Module, PyTorchModelHubMixin):
                                     num_vocabs=self.config.num_factored_vocabs)
 
         factored_targets = factorize_labels(targets_THW)
+        
 
         loss_THW = F.cross_entropy(factored_logits, factored_targets, reduction="none").sum(dim=1)
+        
         acc_THW = (factored_logits.argmax(dim=1) == factored_targets).all(dim=1)
 
         # Compute the mean masked error.
@@ -252,28 +264,49 @@ class STMaskGIT(nn.Module, PyTorchModelHubMixin):
         # only optimize on the masked/noised logits?
         return relevant_loss, relevant_acc
 
-    def compute_logits(self, x_THW):
+    def compute_logits(self, x_THW, actions):
         # x_THW is for z0,...,zT while x_targets is z1,...,zT
         x_TS = rearrange(x_THW, "B T H W -> B T (H W)")
         x_TSC = self.token_embed(x_TS)
-
+        #b x t x (hw) x embed
+                # 256 x 512 -> each image token 512-dimensional
         # additive embeddings, using the same vocab space
+        acts_embed = self.action_embed(actions)
+        
+        #pre layer norm will ensure that gelu gradients stay stable
+        acts_embed = F.gelu(F.layer_norm(acts_embed, [acts_embed.shape[-2], acts_embed.shape[-1]]))
+
+        # #add action embeds
+        x_TSC += acts_embed
+        
+        # x_TSC = F.layer_norm(x_TSC, [x_TSC.shape[-2], x_TSC.shape[-1]])
+        
+        #this should essentially predict next tokens(so same shape as input)
         x_TSC = self.decoder(x_TSC + self.pos_embed_TSC)
+        #same shape as input x_tsc
+        
+        #does a 512x1024 projection
         x_next_TSC = self.out_x_proj(x_TSC)
 
+        #c = 1024
         logits_CTHW = rearrange(x_next_TSC, "B T (H W) C -> B C T H W", H=self.h, W=self.w)
         return logits_CTHW
 
-    def forward(self, input_ids, labels):
+    def forward(self, input_ids, labels, actions):
         T, H, W = self.config.T, self.h, self.w
         x_THW = rearrange(input_ids, "B (T H W) -> B T H W", T=T, H=H, W=W)
+                
+        #4 x 16 x 16 x 16
 
-        logits_CTHW = self.compute_logits(x_THW)
+        logits_CTHW = self.compute_logits(x_THW, actions)
 
         labels = rearrange(labels, "B (T H W) -> B T H W", T=T, H=H, W=W)
+        
+        #4 x 16 x 16 x 16
 
         # Record the loss over masked tokens only to make it more comparable to LLM baselines
         relevant_mask = x_THW[:, 1:] == self.mask_token_id  # could also get mask of corrupted tokens by uncommenting line in `get_maskgit_collator`
+        #4 x 15 x 16 x 16
         relevant_loss, relevant_acc = self.compute_loss_and_acc(logits_CTHW, labels, relevant_mask)
 
         return ModelOutput(loss=relevant_loss, acc=relevant_acc, logits=logits_CTHW)

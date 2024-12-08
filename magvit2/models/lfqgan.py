@@ -120,6 +120,7 @@ class VQModel(L.LightningModule):
 
     def encode(self, x):
         h = self.encoder(x)
+        #4 x 18 x _ x _ 
         (quant, emb_loss, info), loss_breakdown = self.quantize(h, return_loss_breakdown=True)
         ### using token factorization the info is a tuple (each for embedding)
         return quant, emb_loss, info, loss_breakdown
