@@ -6,16 +6,33 @@ img = (
     modal.Image.debian_slim(python_version="3.10.12")
     .apt_install(
         "wget",
-        "git"
+        "git",
+        "ffmpeg",
     )
+    .copy_local_file("/Users/sid/Documents/Sid/ResearchWork/1xgpt/cosmos_build.sh", "./cosmos_build.sh")
+    .copy_local_file("/Users/sid/Documents/Sid/ResearchWork/1xgpt/download_cosmos.py", "./download_cosmos.py")
     .run_commands(
-        "git clone https://github.com/SidMajeti/1xgpt",
+        "git clone https://github.com/1x-technologies/1xgpt",
         "cd 1xgpt && ls && bash ./build.sh",
         "wget https://huggingface.co/1x-technologies/GENIE_138M",
-        # "cd 1xgpt && bash ./cosmos_build.sh",
     )
 )
 
+cosmos_img = (
+    modal.Image.debian_slim(python_version="3.10.12")
+    .apt_install(
+        "wget",
+        "git",
+        "ffmpeg",
+    )
+    .copy_local_file("/Users/sid/Documents/Sid/ResearchWork/1xgpt/download_cosmos.py", "./download_cosmos.py")
+    .copy_local_file("/Users/sid/Documents/Sid/ResearchWork/1xgpt/cosmos_build.sh", "./cosmos_build.sh")
+    .run_commands(
+        "bash ./cosmos_build.sh",
+        secrets=[modal.Secret.from_name("huggingface-secret")],
+    )
+)
+    
 volume = modal.Volume.from_name("dataset", create_if_missing=True)
 
 data_vol = '/data_vol'
@@ -50,9 +67,11 @@ def train():
     subprocess.run(command, shell=True)
     volume.commit()
     
-@app.function(image=img, volumes={'/data': cloud_bucket, data_vol: volume}, gpu = "a10g", timeout=3600, mounts=[modal.Mount.from_local_dir("/Users/sid/Documents/Sid/ResearchWork/1xgpt", remote_path="/1xgpt")])
+@app.function(image=cosmos_img, volumes={'/data': cloud_bucket, data_vol: volume}, gpu = "a10g", timeout=3600,
+              secrets=[modal.Secret.from_name("huggingface-secret")],
+              mounts=[modal.Mount.from_local_dir("/Users/sid/Documents/Sid/ResearchWork/1xgpt", remote_path="/1xgpt")])
 def get_data():
-    command = f"cd /1xgpt && source cosmos/bin/activate && ls /data/robotics/droid_raw/1.0.1 && python data_preprocess.py \
+    command = f"cd .. && . cosmos/bin/activate && cd /1xgpt && python data_preprocess.py \
     --external_data_dir /data/robotics/droid_raw/1.0.1 --out_file /data_vol/droid_tokens.bin"
     subprocess.run(command, shell=True)
     
