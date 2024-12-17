@@ -1,0 +1,22 @@
+{
+  "S": 256,
+  "T": 16,
+  "action_space": 26,
+  "attn_drop": 0.0,
+  "d_model": 256,
+  "factored_vocab_size": 512,
+  "image_vocab_size": 262144,
+  "max_corrupt_rate": 0.2,
+  "mlp_bias": true,
+  "mlp_drop": 0.0,
+  "mlp_ratio": 4.0,
+  "non_mlm_ratio": 0.5,
+  "num_factored_vocabs": 2,
+  "num_heads": 8,
+  "num_layers": 48,
+  "num_prompt_frames": 8,
+  "proj_bias": true,
+  "qk_norm": false,
+  "qkv_bias": false,
+  "use_mup": false
+}

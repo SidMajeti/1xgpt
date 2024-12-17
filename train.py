@@ -202,6 +202,11 @@ def parse_args():
         type=float,
         default=1e-8,
     )
+    parser.add_argument(
+        "--freeze_layers",
+        action="store_true",
+        help="Freeze all layers except action-related layers."
+    )
 
     # Misc
     parser.add_argument("--output_dir", type=str, required=True, help="Where to store the model checkpoints.")
@@ -276,7 +281,7 @@ def visualize(accelerator, model, dataloader, window_size, metrics_prefix="eval"
     unwrapped_model.eval()
     for step, batch in enumerate(dataloader):
         # Note: hardcoding 4 image cap for faster inference on small models
-        reshaped_labels = rearrange(batch["labels"][:4], "b (t s) -> b t s", t=window_size).to(accelerator.device)  # `s` is really `(h, w)`
+        reshaped_labels = rearrange(batch["labels"][:16], "b (t s) -> b t s", t=window_size).to(accelerator.device)  # `s` is really `(h, w)`
 
         num_prompt_frames = window_size // 2  # hardcoding half of frames for context
         num_new_tokens = latent_side_len ** 2 * (window_size - num_prompt_frames)
@@ -368,9 +373,10 @@ def main():
         eval_dataset = RawTokenDataset(args.val_data_dir, window_size=args.window_size,
                                        stride=args.stride, filter_overlaps=True)
     else:
-        train_dataset.valid_start_inds = train_dataset.valid_start_inds[:args.per_device_train_batch_size
-                                                                         * args.gradient_accumulation_steps
-                                                                         * accelerator.num_processes]
+        # train_dataset.valid_start_inds = train_dataset.valid_start_inds[:args.per_device_train_batch_size
+        #                                                                  * args.gradient_accumulation_steps
+        #                                                                  * accelerator.num_processes]
+        train_dataset.valid_start_inds = train_dataset.valid_start_inds[:100]
         eval_dataset = train_dataset
 
     assert all(train_dataset.metadata[shared_key] == eval_dataset.metadata[shared_key]
@@ -431,7 +437,18 @@ def main():
         config.S = latent_side_len**2
         # model = STMaskGIT(config)
         
-        model = STMaskGIT.from_pretrained(args.checkpoint_dir)
+        if args.checkpoint_dir is not None:
+            model = STMaskGIT.from_pretrained(args.checkpoint_dir)
+        else:
+            model = STMaskGIT(config)
+        # Freeze all parameters except action-related layers
+        if args.freeze_layers:
+            for name, param in model.named_parameters():
+                print(name)
+                if not any(x in name for x in ['action_embed']):
+                    param.requires_grad = False
+                else:
+                    print(f"Keeping {name} trainable")
 
         if args.mu_transfer:
             model.set_mup_shapes(rescale_params=True)
